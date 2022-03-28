@@ -36,11 +36,20 @@ VCL_App_Ver = 100 	;Set VCL software revision
 ;		Drive2 connected to PWM2
 ;		Drive3 connected to PWM3
 
-Drive1			equals	PWM1
-Drive2			equals	PWM2
-Drive3			equals	PWM3
-Drive4          equals  PWM4
-
+; We understood this section as making Drive1 an alias for PWM1
+;   even though PWM1 is always used anyway and never Drive1.
+;   Is that correct? 
+;
+;Drive1			equals	PWM1 changes
+; main contractor
+; switch the jobs of Drive1 and Drive 5. Drive 1 is currently being used as a variable and should be doing the job Driver 5 is currently doing
+;Drive2			equals	PWM2
+; EM Brake. This does not change.
+;Drive3			equals	PWM3
+; switch the jobs of Drive3 and Drive 4. Drive 3 is currently being used as a variable and should be doing the job Driver 4 is currently doing
+;Drive4          equals  PWM4
+; is doing the job Drive 3 should be doing. Drive 4 should be used as a variable instead
+; Driver5(PWM5) is currently doing the job Driver 1(PWM1) should be doing. rewire to switch them
 HVRequest		equals	User_bit1
 DriveRequest	equals	User_bit2
 NEUTRAL			equals	User_bit3
@@ -51,36 +60,59 @@ PDO2			equals	User2
 PDO3			equals	User3
 ; State machine
 State			equals	User4
+; state 0
+;   initial state when there is no driver
+; state 1
+;   vehicle is running normally
+; state 2
+;   trap state with no exit conditions
+; state 3
+;   handles estop when it occurs
+;   resets things and returns to state 0
 
+; unsure of what this entails
+; temp is not used within anywhere else
 temp            equals	User9
 
+; 16-bit throttle signal is split accross two 8-bit values
+; throttle = throttle_high*255 + throttle_low
 throttle_high	equals	User10
 throttle_low	equals	User11
 
+; is initialized to 0 later on and never used again in code
 Count_Low		equals	User12
+; is initialized to 0 later on and never used again in code
 Count_High		equals  User13
 
 BMS_temp		equals	User14
 SOC 			equals  User15
+; is initialized to 0 later on and never used again in code
 flashing_H		equals	User16
+; is initialized to 0 later on and never used again in code
 flashing_L		equals	User17
 SetInterlock	equals	User_bit4
 
 e_stop          equals  User18
 e_stop_check    equals  User19
+ 
 
 ;---------------- Initialization ----------------------------
 
+; initially, there is no driver, so no voltage to move the wheel
 SetInterlock = 0
 VCL_Throttle = 0
+; confused on this part as to why the brake =0
 VCL_Brake = 0
+; state is initially 0 as the car is not moving yet
 state = 0
 DisplayState = 1
 Count_Low = 0
 Count_High = 0
 flashing_L = 0
 flashing_H = 0
+; there is no signal to stop
 e_stop = 0
+; initially, there is no need to put on the estop, so the check for estop is set to 0
 e_stop_check = 0
 
 ;---------------- CAN Variables -----------------------------
@@ -210,18 +242,22 @@ Mainloop:
 
 ; PWM stops two drivers from doing the same thing by swaping the drivers  
 
-	if(PWM3_Output > 0){ ;100%
-		put_pwm(PWM4, 0x7fff)
+	if(PWM4_Output > 0){ ;100%
+	; as stated before, rewire PWM3 and PWM4 such that PWM3 does PWM4's work and set PWM4 free
+	; PWM3 seems to be a variable inside the computer
+		put_pwm(PWM3, 0x7fff)
 	}
 	else{
-		put_pwm(PWM4, 0x0) ;0
+		put_pwm(PWM3, 0x0) ;0
 	}
 
-	if(PWM1_Output > 0){ ;used as binary states, relay controls 
-		put_pwm(PWM5, 0x7fff)
+	if(PWM5_Output > 0){ ;used as binary states, relay controls 
+	; this code seems to run with the same logic as PWM3 and PWM4
+	; rewire PWM1 and PWM5 such that PWM1 does PWM5's work and PWM5 is free. The work PWM1 is doing right now should be done with another variable
+		put_pwm(PWM1, 0x7fff)
 	}
 	else{
-  	put_pwm(PWM5, 0)
+  	put_pwm(PWM1, 0)
 	}
 
 
@@ -237,10 +273,14 @@ Mainloop:
 		Clear_interlock()
 		; LED driver in order dashboards
 		put_pwm(PWM2,0)
+		; sets the EM brake to zero
+		; This is because there is presumably no person present 
 
 		if((SetInterlock > 0) & (e_stop_check = 0))	; if interlock request observed, go to interlock state
 		{
 			state = 1
+			; this state means that the vehicle is ready to drive
+			; the interlock would be on
 		}
 	}
 	else if(state = 1)	; Interlock ON, requested by CAN message
@@ -252,43 +292,59 @@ Mainloop:
 		if(((throttle_high*255 + throttle_low) < 0) or ((throttle_high*255 + throttle_low) > 32767)) ; if throttle signal out of bounds, reset it to zero
 		{
 			VCL_Throttle = 0
+			; there either is no input from the driver or the input exceeded the maximum 
 		}
     	else
 		{
 			VCL_Throttle = (throttle_high*255 + throttle_low)
+			; the throttle signal is in bounds and is between 0 and 32767
 	  	}
 
 		; state in the dash has changed go back to state zero
 		if(SetInterlock = 0)	; if interlock request is not observed, go back to pre-interlock state
 		{
 			state = 0;
+			; this is to ensure that there is a person in the seat
+			; a person would have inputted a signal or command.
 		}
 
 		; e-stop has been hit
 		if(Status3 = 36) ; an OS defined variable that has info on driver faults
+		; checks for 2 specific errors
+		; Bit2 = Coi12 Driver Open/Short (Code 32)
+		; Bit5 = PD Open/Short (Code 35)
 		{
 			state = 3
 			e_stop = 1
+			; sends CAN message saying that estop should activate
 			send_mailbox(eStop)
 		}
 
 		else if(Status3 > 0) 
 		{
-			state = 2; ; trap state
+			; trap state
+			state = 2
 		}
 	}
 	else if(state = 2)	; Trap state. No exit conditions. DO NOT TOUCH!!!!!!!
+	; is entered when there are more errors than just estop (Status3 > 0). 
 	{
 		Clear_interlock()
+		; set EM Brake = 0
 		put_pwm(PWM2, 0)
 	} 
 
 	else if(state = 3) ; handle estop
 	{
 		if(e_stop_check = 1)
+		; checking for e-stop
 		{
+			; interlock = 0
 			state = 0
+			; reset everything to 0,
 			e_stop = 0
+			; sends CAN message for the car to stop
+			; state was set to 0 accordingly
 			send_mailbox(eStop)
 		}
 	}
